@@ -13,7 +13,9 @@ class spike64(targets.Target):
     harts = [spike64_hart()]
     openocd_config_path = "spike-1.cfg"
     timeout_sec = 30
+    implements_custom_test = True
 
     def create(self):
         # 32-bit FPRs only
-        return testlib.Spike(self, isa="RV64IMAFC", progbufsize=0)
+        return testlib.Spike(self, isa="RV64IMAFC", progbufsize=0,
+                abstract_rti=30)

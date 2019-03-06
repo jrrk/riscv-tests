@@ -75,6 +75,13 @@ class Target(object):
     # Supports mtime at 0x2004000
     supports_clint_mtime = True
 
+    # Implements custom debug registers like spike does. It seems unlikely any
+    # hardware will every do that.
+    implements_custom_test = False
+
+    # When true it indicates that reading invalid memory doesn't return an error
+    invalid_memory_returns_zero = False
+
     # Internal variables:
     directory = None
     temporary_files = []

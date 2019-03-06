@@ -56,13 +56,16 @@ def compile(args, xlen=32): # pylint: disable=redefined-builtin
         raise Exception("Compile failed!")
 
 class Spike(object):
+    # pylint: disable=too-many-instance-attributes
     def __init__(self, target, halted=False, timeout=None, with_jtag_gdb=True,
-            isa=None, progbufsize=None):
+            isa=None, progbufsize=None, dmi_rti=None, abstract_rti=None):
         """Launch spike. Return tuple of its process and the port it's running
         on."""
         self.process = None
         self.isa = isa
         self.progbufsize = progbufsize
+        self.dmi_rti = dmi_rti
+        self.abstract_rti = abstract_rti
 
         if target.harts:
             harts = target.harts
@@ -123,6 +126,12 @@ class Spike(object):
         if not self.progbufsize is None:
             cmd += ["--progsize", str(self.progbufsize)]
             cmd += ["--debug-sba", "32"]
+
+        if not self.dmi_rti is None:
+            cmd += ["--dmi-rti", str(self.dmi_rti)]
+
+        if not self.abstract_rti is None:
+            cmd += ["--abstract-rti", str(self.abstract_rti)]
 
         assert len(set(t.ram for t in harts)) == 1, \
                 "All spike harts must have the same RAM layout"
@@ -299,8 +308,13 @@ class Openocd(object):
 
     def __del__(self):
         try:
-            self.process.kill()
-            self.process.wait()
+            self.process.terminate()
+            start = time.time()
+            while time.time() < start + 10:
+                if self.process.poll():
+                    break
+            else:
+                self.process.kill()
         except (OSError, AttributeError):
             pass
 
@@ -387,7 +401,7 @@ class Gdb(object):
             # Force consistency.
             self.command("set print entry-values no")
             self.command("set remotetimeout %d" % self.timeout)
-            self.command("target extended-remote localhost:%d" % port)
+            self.command("target extended-remote localhost:%d" % port, ops=10)
             if self.binary:
                 self.command("file %s" % self.binary)
             threads = self.threads()
@@ -457,7 +471,7 @@ class Gdb(object):
                 self.select_child(child)
                 self.command(command)
 
-    def c(self, wait=True, async=False):
+    def c(self, wait=True, async=False, checkOutput=True, ops=20):
         """
         Dumb c command.
         In RTOS mode, gdb will resume all harts.
@@ -468,10 +482,11 @@ class Gdb(object):
             async = "&"
         else:
             async = ""
-        ops = 10
         if wait:
             output = self.command("c%s" % async, ops=ops)
-            assert "Continuing" in output
+            if checkOutput:
+                assert "Continuing" in output
+                assert "Could not insert hardware" not in output
             return output
         else:
             self.active_child.sendline("c%s" % async)
@@ -498,9 +513,9 @@ class Gdb(object):
                 for child in self.children:
                     child.expect(r"\(gdb\)")
 
-    def interrupt(self):
+    def interrupt(self, ops=1):
         self.active_child.send("\003")
-        self.active_child.expect(r"\(gdb\)", timeout=6000)
+        self.active_child.expect(r"\(gdb\)", timeout=self.timeout * ops)
         return self.active_child.before.strip()
 
     def interrupt_all(self):
@@ -530,8 +545,8 @@ class Gdb(object):
         else:
             return int(text, 0)
 
-    def p(self, obj, fmt="/x"):
-        output = self.command("p%s %s" % (fmt, obj))
+    def p(self, obj, fmt="/x", ops=1):
+        output = self.command("p%s %s" % (fmt, obj), ops=ops)
         m = re.search("Cannot access memory at address (0x[0-9a-f]+)", output)
         if m:
             raise CannotAccess(int(m.group(1), 0))
@@ -545,6 +560,18 @@ class Gdb(object):
         output = self.command("p %s" % obj)
         value = shlex.split(output.split('=')[-1].strip())[1]
         return value
+
+    def info_registers(self, group):
+        output = self.command("info registers %s" % group, ops=5)
+        result = {}
+        for line in output.splitlines():
+            parts = line.split()
+            name = parts[0]
+            if "Could not fetch" in line:
+                result[name] = " ".join(parts[1:])
+            else:
+                result[name] = int(parts[1], 0)
+        return result
 
     def stepi(self):
         output = self.command("stepi", ops=10)
@@ -561,12 +588,29 @@ class Gdb(object):
         output = self.command("b %s" % location, ops=5)
         assert "not defined" not in output
         assert "Breakpoint" in output
-        return output
+        m = re.search(r"Breakpoint (\d+),? ", output)
+        assert m, output
+        return int(m.group(1))
 
     def hbreak(self, location):
         output = self.command("hbreak %s" % location, ops=5)
         assert "not defined" not in output
         assert "Hardware assisted breakpoint" in output
+        return output
+
+    def watch(self, expr):
+        output = self.command("watch %s" % expr, ops=5)
+        assert "not defined" not in output
+        assert "atchpoint" in output
+        return output
+
+    def swatch(self, expr):
+        self.command("show can-use-hw-watchpoints")
+        self.command("set can-use-hw-watchpoints 0")
+        output = self.command("watch %s" % expr, ops=5)
+        assert "not defined" not in output
+        assert "atchpoint" in output
+        self.command("set can-use-hw-watchpoints 1")
         return output
 
     def threads(self):
@@ -715,11 +759,14 @@ def header(title, dash='-', length=78):
     else:
         print dash * length
 
-def print_log(path):
-    header(path)
-    for l in open(path, "r"):
+def print_log_handle(name, handle):
+    header(name)
+    for l in handle:
         sys.stdout.write(l)
     print
+
+def print_log(path):
+    print_log_handle(path, open(path, "r"))
 
 class BaseTest(object):
     compiled = {}
@@ -816,10 +863,15 @@ class BaseTest(object):
             return result
 
         finally:
+            # Get handles to logs before the files are deleted.
+            logs = []
             for log in self.logs:
-                print_log(log)
-            header("End of logs")
+                logs.append((log, open(log, "r")))
+
             self.classTeardown()
+            for name, handle in logs:
+                print_log_handle(name, handle)
+            header("End of logs")
 
         if not result:
             result = 'pass'
@@ -859,10 +911,11 @@ class GdbTest(BaseTest):
         if not self.gdb:
             return
         self.gdb.interrupt()
+        self.gdb.command("info breakpoints")
         self.gdb.command("disassemble", ops=20)
-        self.gdb.command("info registers all", ops=100)
+        self.gdb.command("info registers all", ops=20)
         self.gdb.command("flush regs")
-        self.gdb.command("info threads", ops=100)
+        self.gdb.command("info threads", ops=20)
 
     def classTeardown(self):
         del self.gdb
