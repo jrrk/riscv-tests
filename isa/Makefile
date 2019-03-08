@@ -35,6 +35,7 @@ RISCV_PREFIX ?= riscv$(XLEN)-unknown-elf-
 RISCV_GCC ?= $(RISCV_PREFIX)gcc
 RISCV_GCC_OPTS ?= -static -mcmodel=medany -fvisibility=hidden -nostdlib -nostartfiles
 RISCV_OBJDUMP ?= $(RISCV_PREFIX)objdump --disassemble-all --disassemble-zeroes --section=.text --section=.text.startup --section=.text.init --section=.data
+RISCV_OBJCOPY ?= $(RISCV_PREFIX)objcopy -O verilog --adjust-vma=-0x80000000
 RISCV_SIM ?= spike
 
 vpath %.S $(src_dir)
@@ -44,6 +45,7 @@ vpath %.S $(src_dir)
 
 %.dump: %
 	$(RISCV_OBJDUMP) $< > $@
+	$(RISCV_OBJCOPY) $< $<.vlog
 
 %.out: %
 	$(RISCV_SIM) --isa=rv64gc $< 2> $@

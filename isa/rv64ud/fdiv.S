@@ -40,7 +40,11 @@ RVTEST_CODE_BEGIN
 
   TEST_FP_OP1_D( 7,  fsqrt.d, 1, 13.076696830622021, 171.0);
 
-  TEST_FP_OP1_D( 8,  fsqrt.d, 1,0.00040099251863345283320230749702, 1.60795e-7);
+  TEST_FP_OP1_D( 8,  fsqrt.d, 1, 0.00040099251863345283320230749702, 1.60795e-7);
+
+  TEST_FP_OP1_D( 9,  fsqrt.d, 1, 1.0e-160, 1.0e-320);
+
+  TEST_FP_OP1_D(10,  fsqrt.d, 0,                  0,          0 );
 
   TEST_PASSFAIL
 
